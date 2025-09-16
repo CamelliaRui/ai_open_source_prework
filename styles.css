@@ -1,0 +1,39 @@
+/* Reset default margins and padding */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+/* Make html and body take full viewport */
+html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden; /* Prevent scrollbars */
+}
+
+/* Style the game canvas */
+#gameCanvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    background-color: #000; /* Black background in case image doesn't load */
+    cursor: crosshair; /* Game-like cursor */
+}
+
+/* Prevent text selection and context menu on canvas */
+#gameCanvas {
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+/* Disable right-click context menu on canvas */
+#gameCanvas {
+    -webkit-context-menu: none;
+    -moz-context-menu: none;
+    context-menu: none;
+}

@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mini MMORPG</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    
+    <script>
+        // Get canvas and context
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // World map dimensions (as specified in README)
+        const WORLD_WIDTH = 2048;
+        const WORLD_HEIGHT = 2048;
+        
+        // Game state
+        let gameState = {
+            socket: null,
+            connected: false,
+            playerId: null,
+            players: {},
+            avatars: {},
+            worldImage: null,
+            viewportX: 0,
+            viewportY: 0
+        };
+        
+        // Key state tracking for movement
+        let keyStates = {
+            ArrowUp: false,
+            ArrowDown: false,
+            ArrowLeft: false,
+            ArrowRight: false
+        };
+        
+        // Direction mapping
+        const directionMap = {
+            'ArrowUp': 'up',
+            'ArrowDown': 'down',
+            'ArrowLeft': 'left',
+            'ArrowRight': 'right'
+        };
+        
+        // Send movement command to server
+        function sendMoveCommand(direction) {
+            if (!gameState.connected || !gameState.socket) return;
+            
+            const moveMessage = {
+                action: "move",
+                direction: direction
+            };
+            
+            gameState.socket.send(JSON.stringify(moveMessage));
+            console.log('Sent move command:', direction);
+        }
+        
+        // Send stop command to server
+        function sendStopCommand() {
+            if (!gameState.connected || !gameState.socket) return;
+            
+            const stopMessage = {
+                action: "stop"
+            };
+            
+            gameState.socket.send(JSON.stringify(stopMessage));
+            console.log('Sent stop command');
+        }
+        
+        // Handle keydown events
+        function handleKeyDown(event) {
+            // Check if it's an arrow key
+            if (!directionMap[event.code]) return;
+            
+            // Prevent default browser behavior (scrolling)
+            event.preventDefault();
+            
+            // If key is already pressed (key repeat), ignore
+            if (keyStates[event.code]) return;
+            
+            // Mark key as pressed
+            keyStates[event.code] = true;
+            
+            // Send move command
+            const direction = directionMap[event.code];
+            sendMoveCommand(direction);
+        }
+        
+        // Handle keyup events
+        function handleKeyUp(event) {
+            // Check if it's an arrow key
+            if (!directionMap[event.code]) return;
+            
+            // Prevent default browser behavior
+            event.preventDefault();
+            
+            // Mark key as not pressed
+            keyStates[event.code] = false;
+            
+            // Send stop command
+            sendStopCommand();
+        }
+        
+        // WebSocket connection
+        function connectToServer() {
+            console.log('Connecting to game server...');
+            gameState.socket = new WebSocket('wss://codepath-mmorg.onrender.com');
+            
+            gameState.socket.onopen = function() {
+                console.log('Connected to server');
+                gameState.connected = true;
+                joinGame();
+            };
+            
+            gameState.socket.onmessage = function(event) {
+                try {
+                    const message = JSON.parse(event.data);
+                    handleServerMessage(message);
+                } catch (error) {
+                    console.error('Error parsing server message:', error);
+                }
+            };
+            
+            gameState.socket.onclose = function() {
+                console.log('Disconnected from server');
+                gameState.connected = false;
+                // Attempt to reconnect after 3 seconds
+                setTimeout(connectToServer, 3000);
+            };
+            
+            gameState.socket.onerror = function(error) {
+                console.error('WebSocket error:', error);
+            };
+        }
+        
+        // Send join game message
+        function joinGame() {
+            if (!gameState.connected) return;
+            
+            const joinMessage = {
+                action: "join_game",
+                username: "Camellia"
+                // No custom avatar - let server assign one
+            };
+            
+            gameState.socket.send(JSON.stringify(joinMessage));
+            console.log('Sent join game message');
+        }
+        
+        // Handle messages from server
+        function handleServerMessage(message) {
+            console.log('Received message:', message);
+            
+            switch (message.action) {
+                case 'join_game':
+                    if (message.success) {
+                        gameState.playerId = message.playerId;
+                        gameState.players = message.players;
+                        gameState.avatars = message.avatars;
+                        console.log('Successfully joined game as player:', gameState.playerId);
+                        console.log('Total players in game:', Object.keys(gameState.players).length);
+                        console.log('All player IDs:', Object.keys(gameState.players));
+                        
+                        // Count how many "Camellia" players there are
+                        const camelliaCount = Object.values(gameState.players).filter(p => p.username === 'Camellia').length;
+                        if (camelliaCount > 1) {
+                            console.warn(`⚠️  WARNING: Found ${camelliaCount} players named "Camellia"!`);
+                            console.log('This likely means multiple browser tabs are open.');
+                        }
+                        
+                        loadAvatarImages();
+                    } else {
+                        console.error('Failed to join game:', message.error);
+                    }
+                    break;
+                    
+                case 'player_joined':
+                    gameState.players[message.player.id] = message.player;
+                    console.log(`🎮 Player joined: ${message.player.username} (ID: ${message.player.id.substring(0, 8)})`);
+                    console.log(`   Position: (${message.player.x}, ${message.player.y})`);
+                    console.log(`   Total players now: ${Object.keys(gameState.players).length}`);
+                    
+                    if (message.avatar) {
+                        gameState.avatars[message.avatar.name] = message.avatar;
+                        loadAvatarImages();
+                    }
+                    break;
+                    
+                case 'players_moved':
+                    // Update player positions
+                    let moveCount = 0;
+                    for (const playerId in message.players) {
+                        if (gameState.players[playerId]) {
+                            const oldPlayer = gameState.players[playerId];
+                            const newPlayer = message.players[playerId];
+                            
+                            // Check if position actually changed
+                            if (oldPlayer.x !== newPlayer.x || oldPlayer.y !== newPlayer.y) {
+                                console.log(`👤 ${newPlayer.username} moved to (${newPlayer.x}, ${newPlayer.y}), facing ${newPlayer.facing}`);
+                                moveCount++;
+                            }
+                            
+                            gameState.players[playerId] = newPlayer;
+                        }
+                    }
+                    if (moveCount > 0) {
+                        console.log(`📍 ${moveCount} player(s) moved`);
+                    }
+                    break;
+                    
+                case 'player_left':
+                    delete gameState.players[message.playerId];
+                    break;
+                    
+                default:
+                    console.log('Unknown message type:', message.action);
+            }
+            
+            // Redraw the game after any update
+            render();
+        }
+        
+        // Load avatar images from base64 data
+        function loadAvatarImages() {
+            for (const avatarName in gameState.avatars) {
+                const avatar = gameState.avatars[avatarName];
+                avatar.imageObjects = {};
+                
+                for (const direction in avatar.frames) {
+                    avatar.imageObjects[direction] = [];
+                    
+                    for (let i = 0; i < avatar.frames[direction].length; i++) {
+                        const img = new Image();
+                        img.src = avatar.frames[direction][i];
+                        avatar.imageObjects[direction].push(img);
+                    }
+                }
+            }
+            console.log('Avatar images loaded');
+        }
+        
+        // Calculate viewport offset to center on our player
+        function updateViewport() {
+            if (!gameState.playerId || !gameState.players[gameState.playerId]) {
+                return;
+            }
+            
+            const ourPlayer = gameState.players[gameState.playerId];
+            
+            // Center the viewport on our player
+            let targetViewportX = (canvas.width / 2) - ourPlayer.x;
+            let targetViewportY = (canvas.height / 2) - ourPlayer.y;
+            
+            // Clamp viewport to map boundaries
+            // Don't show past the left/top edges (0, 0)
+            targetViewportX = Math.min(targetViewportX, 0);
+            targetViewportY = Math.min(targetViewportY, 0);
+            
+            // Don't show past the right/bottom edges
+            targetViewportX = Math.max(targetViewportX, canvas.width - WORLD_WIDTH);
+            targetViewportY = Math.max(targetViewportY, canvas.height - WORLD_HEIGHT);
+            
+            gameState.viewportX = targetViewportX;
+            gameState.viewportY = targetViewportY;
+        }
+        
+        // Render the entire game
+        function render() {
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Update viewport
+            updateViewport();
+            
+            // Draw world map
+            if (gameState.worldImage) {
+                ctx.drawImage(
+                    gameState.worldImage,
+                    gameState.viewportX,
+                    gameState.viewportY,
+                    WORLD_WIDTH,
+                    WORLD_HEIGHT
+                );
+            }
+            
+            // Draw all players
+            for (const playerId in gameState.players) {
+                drawPlayer(gameState.players[playerId]);
+            }
+        }
+        
+        // Draw a single player avatar and username
+        function drawPlayer(player) {
+            const avatar = gameState.avatars[player.avatar];
+            if (!avatar || !avatar.imageObjects) return;
+            
+            // Calculate screen position
+            const screenX = player.x + gameState.viewportX;
+            const screenY = player.y + gameState.viewportY;
+            
+            // Only draw if player is visible on screen
+            if (screenX < -100 || screenX > canvas.width + 100 || 
+                screenY < -100 || screenY > canvas.height + 100) {
+                return;
+            }
+            
+            // Check if this is our player
+            const isOurPlayer = player.id === gameState.playerId;
+            
+            // Get the correct avatar image
+            let direction = player.facing;
+            let frameIndex = player.animationFrame || 0;
+            
+            // Handle west direction by flipping east frames
+            let flipHorizontal = false;
+            if (direction === 'west') {
+                direction = 'east';
+                flipHorizontal = true;
+            }
+            
+            const avatarImages = avatar.imageObjects[direction];
+            if (!avatarImages || frameIndex >= avatarImages.length) return;
+            
+            const avatarImg = avatarImages[frameIndex];
+            if (!avatarImg.complete) return;
+            
+            // Save context for flipping
+            ctx.save();
+            
+            if (flipHorizontal) {
+                ctx.scale(-1, 1);
+                ctx.drawImage(avatarImg, -screenX - avatarImg.width, screenY);
+            } else {
+                ctx.drawImage(avatarImg, screenX, screenY);
+            }
+            
+            ctx.restore();
+            
+            // Draw a special indicator for our player
+            if (isOurPlayer) {
+                ctx.save();
+                ctx.strokeStyle = '#00ff00'; // Green circle
+                ctx.lineWidth = 3;
+                ctx.setLineDash([5, 5]); // Dashed line
+                ctx.beginPath();
+                ctx.arc(screenX + avatarImg.width/2, screenY + avatarImg.height/2, 40, 0, 2 * Math.PI);
+                ctx.stroke();
+                ctx.restore();
+            }
+            
+            // Draw visual indicator for other players (not just our player)
+            if (!isOurPlayer) {
+                ctx.save();
+                ctx.strokeStyle = '#ffff00'; // Yellow circle for other players
+                ctx.lineWidth = 2;
+                ctx.setLineDash([3, 3]); // Smaller dashes
+                ctx.beginPath();
+                ctx.arc(screenX + avatarImg.width/2, screenY + avatarImg.height/2, 35, 0, 2 * Math.PI);
+                ctx.stroke();
+                ctx.restore();
+            }
+            
+            // Draw movement indicator if player is moving
+            if (player.isMoving) {
+                ctx.save();
+                ctx.fillStyle = isOurPlayer ? '#00ff00' : '#ffaa00'; // Green for us, orange for others
+                ctx.beginPath();
+                ctx.arc(screenX + avatarImg.width - 10, screenY + 10, 5, 0, 2 * Math.PI);
+                ctx.fill();
+                ctx.restore();
+            }
+            
+            // Draw username label
+            ctx.save();
+            ctx.font = '14px Arial';
+            
+            // Different colors for our player vs others
+            if (isOurPlayer) {
+                ctx.fillStyle = '#00ff00'; // Green for our player
+                ctx.strokeStyle = 'black';
+            } else {
+                ctx.fillStyle = '#ffff00'; // Yellow for other players (more visible)
+                ctx.strokeStyle = 'black';
+            }
+            
+            ctx.lineWidth = 2;
+            ctx.textAlign = 'center';
+            
+            const labelX = screenX + (avatarImg.width / 2);
+            const labelY = screenY - 5;
+            
+            // Add player ID for debugging and movement status
+            const movingIndicator = player.isMoving ? '🏃' : '';
+            const displayText = isOurPlayer ? 
+                `${player.username} (YOU) ${movingIndicator}` : 
+                `${player.username} ${movingIndicator}`;
+            
+            // Draw text outline
+            ctx.strokeText(displayText, labelX, labelY);
+            // Draw text fill
+            ctx.fillText(displayText, labelX, labelY);
+            
+            ctx.restore();
+        }
+        
+        // Resize canvas to fill the browser window
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            render();
+        }
+        
+        // Load world image
+        function loadWorldImage() {
+            gameState.worldImage = new Image();
+            gameState.worldImage.onload = function() {
+                console.log('World image loaded');
+                render();
+            };
+            gameState.worldImage.src = 'world.jpg';
+        }
+        
+        // Debug function - you can call this in the browser console
+        function debugGameState() {
+            console.log('=== GAME DEBUG INFO ===');
+            console.log('My Player ID:', gameState.playerId);
+            console.log('Connected:', gameState.connected);
+            console.log('Total Players:', Object.keys(gameState.players).length);
+            console.log('All Players:');
+            for (const playerId in gameState.players) {
+                const player = gameState.players[playerId];
+                const isMe = playerId === gameState.playerId ? ' ← YOU' : '';
+                const moving = player.isMoving ? ' (MOVING)' : ' (STILL)';
+                const facing = ` facing ${player.facing}`;
+                console.log(`  - ${player.username} (${playerId.substring(0, 8)}) at (${player.x}, ${player.y})${facing}${moving}${isMe}`);
+            }
+            
+            const others = Object.values(gameState.players).filter(p => p.id !== gameState.playerId);
+            console.log(`Other players: ${others.length}`);
+            
+            if (others.length > 0) {
+                console.log('Other players should be visible with:');
+                console.log('- Yellow dashed circles around them');
+                console.log('- Yellow usernames');
+                console.log('- Orange dots when moving');
+            }
+            
+            return gameState;
+        }
+        
+        // Make debug function available globally
+        window.debugGameState = debugGameState;
+        
+        // Initialize the game
+        function init() {
+            console.log('Initializing game...');
+            resizeCanvas();
+            loadWorldImage();
+            connectToServer();
+            
+            // Handle window resize
+            window.addEventListener('resize', resizeCanvas);
+            
+            // Add keyboard event listeners for movement
+            window.addEventListener('keydown', handleKeyDown);
+            window.addEventListener('keyup', handleKeyUp);
+            
+            // Start render loop
+            setInterval(render, 16); // ~60 FPS
+        }
+        
+        // Start the game when the page loads
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>
